@@ -34,7 +34,7 @@ class SalesforceBulkQueryToS3Operator(BaseOperator):
                  *args,
                  **kwargs):
 
-        super().__init__(*args, **kwargs)
+        super(BaseOperator).__init__(*args, **kwargs)
 
         self.sf_conn_id = sf_conn_id
         self.soql = soql
@@ -131,7 +131,7 @@ class SalesforceToS3Operator(BaseOperator):
                  *args,
                  **kwargs):
 
-        super(SalesforceToS3Operator, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.sf_conn_id = sf_conn_id
         self.object = sf_obj
@@ -148,8 +148,6 @@ class SalesforceToS3Operator(BaseOperator):
     def special_query(self, query, sf_hook, relationship_object=None):
         if not query:
             raise ValueError("Query is None.  Cannot query nothing")
-
-        sf_hook.sign_in()
 
         results = sf_hook.make_query(query)
         if relationship_object:
@@ -170,17 +168,17 @@ class SalesforceToS3Operator(BaseOperator):
         logging.info("Prepping to gather data from Salesforce")
 
         # Open a name temporary file to store output file until S3 upload
-        with NamedTemporaryFile("w") as tmp:
+        with NamedTemporaryFile("w+") as tmp:
 
             # Load the SalesforceHook
-            hook = SalesforceHook(conn_id=self.sf_conn_id, output=tmp.name)
+            hook = SalesforceHook(conn_id=self.sf_conn_id)
 
             # Attempt to login to Salesforce
             # If this process fails, it will raise an error and die.
-            try:
-                hook.sign_in()
-            except:
-                logging.debug('Unable to login.')
+            # try:
+            #     hook.sign_in()
+            # except:
+            #     logging.debug('Unable to login.')
 
             # Get object from Salesforce
             # If fields were not defined, all fields are pulled.
@@ -205,7 +203,7 @@ class SalesforceToS3Operator(BaseOperator):
             # the list of records is stored under the "records" key
             logging.info("Writing query results to: {0}".format(tmp.name))
 
-            hook.write_object_to_file(query['records'],
+            hook.write_object_to_file(query_results=query['records'],
                                       filename=tmp.name,
                                       fmt=self.fmt,
                                       coerce_to_timestamp=self.coerce_to_timestamp,
@@ -213,17 +211,34 @@ class SalesforceToS3Operator(BaseOperator):
 
             # Flush the temp file and upload temp file to S3
             tmp.flush()
+            if str(self.fmt).lower() in ['json', 'ndjson']:
+                with NamedTemporaryFile("w+") as tmp_pretty:
+                    tmp.seek(0)
+                    json_data = json.load(tmp)
+                    for datum in json_data:
+                        json.dump(datum, tmp_pretty, ensure_ascii=False, indent=4)
+                        tmp_pretty.write("\n")
+                    tmp_pretty.flush()
+                    dest_s3 = S3Hook(self.s3_conn_id)
 
-            dest_s3 = S3Hook(self.s3_conn_id)
+                    dest_s3.load_file(
+                        filename=tmp_pretty.name,
+                        key=self.s3_key,
+                        bucket_name=self.s3_bucket,
+                        replace=True
+                    )
+                    tmp_pretty.close()
+            else:
+                dest_s3 = S3Hook(self.s3_conn_id)
 
-            dest_s3.load_file(
-                filename=tmp.name,
-                key=self.s3_key,
-                bucket_name=self.s3_bucket,
-                replace=True
-            )
+                dest_s3.load_file(
+                    filename=tmp.name,
+                    key=self.s3_key,
+                    bucket_name=self.s3_bucket,
+                    replace=True
+                )
 
-            dest_s3.connection.close()
+            # dest_s3.connection.close()
 
             tmp.close()
 
